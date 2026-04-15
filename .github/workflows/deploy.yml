@@ -1,4 +1,4 @@
-name: Build and Deploy spring Service
+name: Build and Deploy Spring Service
 
 on:
   push:
@@ -13,110 +13,130 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
-    #1 . Checkout code
-    - name: Checkout
-      uses: actions/checkout@v4
+      # 1. Checkout
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # 2. Setup multi-arch builder
-    - name: Setup QEMU
-      uses: docker/setup-qemu-action@v3
+      # 2. Setup multi-arch
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
 
-    - name: Setup Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    # 3. AWS login
-    - name: Configure AWS
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
 
-    # 4. Login ECR
-    - name: Login ECR
-      uses: aws-actions/amazon-ecr-login@v2
-      
-    # 5. Build and Push Image
-    - name: Build and Push Docker Image
-      run: |
-        IMAGE_TAG=${GITHUB_SHA}
+      # 3. Configure AWS
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-        IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:$IMAGE_TAG
+      # 4. Verify identity
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
 
-        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+      # 5. Login to ECR
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-        docker buildx build \
-          --platform linux/amd64,linux/arm64 \
-          --no-cache \
-          -t $IMAGE_URI \
-          --push .
+      # 6. Build and push image
+      - name: Build and Push Docker Image
+        run: |
+          set -e
 
-    # 6. Verify Image Exists in ECR
-    - name: Verify Image Exists in ECR
-      run: |
-        aws ecr describe-images \
-          --repository-name ${{ env.ECR_REPO }} \
-          --image-ids imageTag=$IMAGE_TAG
+          IMAGE_TAG=${GITHUB_SHA}
+          IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:$IMAGE_TAG
 
-    # 7. Deploy to EC2 via SSM
-    - name: Deploy to EC2 via SSM
-      run: |
-        set -e
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
-        IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:$IMAGE_TAG
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --no-cache \
+            -t $IMAGE_URI \
+            --push .
 
-        COMMAND_ID=$(aws ssm send-command \
-          --targets "Key=instanceIds, Values=${{ secrets.EC2_INSTANCE_ID }}" \
-          --document-name "AWS-RunShellScript" \
-          --comment "Deploying spring to Container" \
-          --query "Command.CommandId" \
-          --output text \
-          --parameters commands="[
-            \"set -ex\",
-            \"echo ++++DEBUG START++++\",
-            \echo IMAGE_URI: $IMAGE_URI\",
-            \"aws --version\",
-            \"docker --version\",
-            \"echo Logging into ECR...\",
-            \"aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com\",
-            \"cd ${{ env.APP_DIR }}\" || echo APP_DIR missing\",
-            \"docker-compose down --remove-orphans || true\",
-            \"docker-compose don --rmi all -- remove-orphans || true\",
-            \"docker-compose prune -af || true\",
-            \"sed -i '/IMAGE_URI/d' .env || true\",
-            \"echo IMAGE_URI=$IMAGE_URI >> .env\",
-            \"cat .env\",
-            \"docker pull $IMAGE_URI\",
-            \"docker-compose up -d --force-recreate --pull always\"
-            \"docker ps\
-            \echo ++++DEBUG END++++\"
-          ]")
+      # 7. Verify image exists
+      - name: Verify Image Exists in ECR
+        run: |
+          aws ecr describe-images \
+            --repository-name ${{ env.ECR_REPO }} \
+            --image-ids imageTag=$IMAGE_TAG \
+            --region $AWS_REGION
 
-        echo "SSM Command ID: $COMMAND_ID"
+      # 8. Deploy via SSM
+      - name: Deploy to EC2 via SSM
+        run: |
+          set -e
 
-        for i in {1..20}; do
-          STATUS=$(aws ssm list-command-invocations \
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy Spring Service" \
+            --region $AWS_REGION \
+            --query "Command.CommandId" \
+            --output text \
+            --parameters 'commands=[
+              "set -ex",
+              "echo START_DEPLOY",
+
+              "echo IMAGE_URI='"$IMAGE_URI"'",
+
+              "aws --version",
+              "docker --version",
+
+              "echo Login to ECR",
+              "aws ecr get-login-password --region '"$AWS_REGION"' | docker login --username AWS --password-stdin '"${{ secrets.AWS_ACCOUNT_ID }}"'.dkr.ecr.'"$AWS_REGION"'.amazonaws.com",
+
+              "cd '"$APP_DIR"' || echo APP_DIR missing",
+
+              "docker-compose down --remove-orphans || true",
+              "docker system prune -af || true",
+
+              "sed -i '\''/IMAGE_URI/d'\'' .env || true",
+              "echo IMAGE_URI='"$IMAGE_URI"' >> .env",
+
+              "cat .env",
+
+              "docker pull '"$IMAGE_URI"'",
+
+              "docker-compose up -d --force-recreate",
+
+              "docker ps",
+
+              "echo END_DEPLOY"
+            ]')
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          # Wait for execution
+          for i in {1..20}; do
+            STATUS=$(aws ssm list-command-invocations \
+              --command-id $COMMAND_ID \
+              --details \
+              --query "CommandInvocations[0].Status" \
+              --output text \
+              --region $AWS_REGION)
+
+            echo "Current Status: $STATUS"
+
+            if [[ "$STATUS" == "Success" ]]; then
+              echo "Deployment successful"
+              exit 0
+            elif [[ "$STATUS" == "Failed" ]]; then
+              echo "Deployment failed"
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+          # Final logs
+          aws ssm get-command-invocation \
             --command-id $COMMAND_ID \
-            --details \
-            --query "CommandInvocations[0].Status" \
-            --output text)
-
-          echo "Current SSM Command Status: $STATUS"
-
-          if [[ "$STATUS" == "Success" ]]; then
-            echo "Deployment successful!"
-            exit 0
-          elif [[ "$STATUS" == "Failed" ]]; then
-            echo "Deployment failed."
-            exit 1
-          fi
-
-          sleep 15
-        done
-
-        aws ssm get-command-invocation \
-          --command-id $COMMAND_ID \
-          --instance-id ${{ secrets.EC2_INSTANCE_ID }} \
-          --output text
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --region $AWS_REGION \
+            --output text
