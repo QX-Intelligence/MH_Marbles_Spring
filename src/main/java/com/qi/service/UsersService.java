@@ -99,9 +99,9 @@ public class UsersService {
     private void addCookie(HttpServletResponse response,String name  , String value,int maxAge){
         ResponseCookie cookie = ResponseCookie.from(name,value)
                 .httpOnly(true)
-                .secure(false)
+                .secure(true)
                 .path("/")
-                .sameSite("Lax")
+                .sameSite("None")
                 .maxAge(maxAge)
                 .build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
@@ -110,9 +110,9 @@ public class UsersService {
     private void clearCookie(HttpServletResponse response,String name){
         ResponseCookie cookie = ResponseCookie.from(name,"")
                 .httpOnly(true)
-                .secure(false)
+                .secure(true)
                 .path("/")
-                .sameSite("Lax")
+                .sameSite("None")
                 .maxAge(0)
                 .build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
