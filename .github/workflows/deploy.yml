@@ -19,24 +19,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Setup QEMU
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
+      # 2. Setup Java
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
 
-      # 3. Setup Buildx
+      # 3. Cache Maven dependencies
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-
+
+      # 4. Build JAR
+      - name: Build JAR
+        run: mvn clean package -DskipTests
+
+      # 5. Setup Docker Buildx
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 4. Cache Docker layers
-      - name: Cache Docker layers
-        uses: actions/cache@v3
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-
-      # 5. Configure AWS credentials
+      # 6. Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -44,11 +51,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 6. Login to ECR
+      # 7. Login to ECR
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 7. Build and Push Docker Image
+      # 8. Build & Push Docker Image
       - name: Build and Push Docker Image
         run: |
           set -e
@@ -60,20 +67,11 @@ jobs:
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
           docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --build-arg CACHE_BUST=${GITHUB_SHA} \
-            --cache-from=type=local,src=/tmp/.buildx-cache \
-            --cache-to=type=local,dest=/tmp/.buildx-cache-new,mode=max \
+            --platform linux/amd64 \
             -t $IMAGE_URI \
             --push .
 
-      # 8. Move cache
-      - name: Move cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
-
-      # 9. Verify image exists in ECR
+      # 9. Verify image exists
       - name: Verify Image Exists in ECR
         run: |
           aws ecr describe-images \
@@ -81,7 +79,7 @@ jobs:
             --image-ids imageTag=$IMAGE_TAG \
             --region $AWS_REGION
 
-      # 10. Deploy to EC2 via SSM
+      # 10. Deploy via SSM
       - name: Deploy to EC2 via SSM
         run: |
           set -e
