@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/spring")
 public class AdminController {
     private final UsersService usersService;
-    @GetMapping("/owner/info")
+    @GetMapping("/spring/owner/info")
     @PreAuthorize("hasRole('OWNER')")
     public ResponseEntity<OwnerInfo> getOwnerInfo(Authentication authentication){
         return new ResponseEntity<>(usersService.getOwnerInfo(authentication), HttpStatus.OK);
